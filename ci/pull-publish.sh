@@ -1,15 +1,14 @@
 #!/bin/sh
-# The daily-pull job's pull-and-publish step. A ci.yml step is capped at
-# 4096 bytes; this one is longer, so it lives here and the step runs it.
+# The daily-pull workflow's pull-and-publish step. Needs GH_TOKEN with
+# contents: write; the archive is metro.db.gz on the release tagged archive.
 set -e
-export PATH="$PWD/.venv/bin:$PATH" DB=raw_data/metro.db HOST=$GITBAY_SSH R=krz/omaha-metro-blotter
-SSH="ssh -F $PWD/.ssh_config"
+export PATH="$PWD/.venv/bin:$PATH" DB=raw_data/metro.db
 mkdir -p raw_data
 
 # Restore the published archive; a crashed publish leaves metro.db.new.gz.
-if $SSH $HOST release asset get $R archive metro.db.gz > metro.db.gz 2>/dev/null && [ -s metro.db.gz ]; then
+if gh release download archive --pattern metro.db.gz --output metro.db.gz --clobber 2>/dev/null && [ -s metro.db.gz ]; then
   :
-elif $SSH $HOST release asset get $R archive metro.db.new.gz > metro.db.gz 2>/dev/null && [ -s metro.db.gz ]; then
+elif gh release download archive --pattern metro.db.new.gz --output metro.db.gz --clobber 2>/dev/null && [ -s metro.db.gz ]; then
   echo "recovered from interrupted publish"
 else
   echo "ERROR: no metro.db.gz on release 'archive'; aged-out records cannot be recovered"
@@ -74,12 +73,12 @@ fi
 # point at least one asset holds the full archive.
 sqlite3 "$DB" "VACUUM;"
 gzip -c "$DB" > metro.db.gz
-$SSH $HOST release asset remove $R archive metro.db.new.gz 2>/dev/null || true
-$SSH $HOST release asset add $R archive metro.db.new.gz < metro.db.gz
-$SSH $HOST release asset remove $R archive metro.db.gz 2>/dev/null || true
-$SSH $HOST release asset add $R archive metro.db.gz < metro.db.gz
-$SSH $HOST release asset remove $R archive metro.db.new.gz 2>/dev/null || true
-rm metro.db.gz
+cp metro.db.gz metro.db.new.gz
+gh release delete-asset archive metro.db.new.gz --yes 2>/dev/null || true
+gh release upload archive metro.db.new.gz
+gh release upload archive metro.db.gz --clobber
+gh release delete-asset archive metro.db.new.gz --yes
+rm metro.db.gz metro.db.new.gz
 {
   echo "SQLite archive of Omaha metro police incident feeds, rebuilt twice daily."
   echo "Sarpy County and Council Bluffs publish a rolling 12-month window,"
@@ -98,6 +97,6 @@ rm metro.db.gz
      FROM incidents GROUP BY agency ORDER BY rows DESC"
   echo '```'
 } > notes.md
-$SSH $HOST "release edit $R archive --title 'Incident archive' --file -" < notes.md
+gh release edit archive --title 'Incident archive' --notes-file notes.md
 rm notes.md
 echo "archive published"

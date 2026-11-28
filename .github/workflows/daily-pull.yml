@@ -1,0 +1,73 @@
+# Twice-daily archive pull. Sarpy and Council Bluffs serve a rolling 12-month
+# window; records that age out of those feeds exist nowhere else. This job is
+# the only thing keeping them, so ci/pull-publish.sh refuses to publish an
+# archive smaller than the one it started with. The archive is metro.db.gz on
+# the release tagged archive; the site is pushed to the pages branch.
+name: daily pull
+
+on:
+  schedule:
+    # Offset from the hour: GitHub drops on-the-hour runs under load.
+    - cron: "17 11 * * *"
+    - cron: "17 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: archive
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - run: python3 -m venv .venv && .venv/bin/pip install -q -r requirements-ingest.txt
+      - run: sh ci/pull-publish.sh
+      - name: Build and deploy the site
+        run: |
+          set -e
+          export PATH="$PWD/.venv/bin:$PATH" DB=raw_data/metro.db
+          .venv/bin/pip install -q -r requirements.txt
+          python build_site.py
+          cd site && git init -q -b pages
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -q -m "site $(date -u '+%Y-%m-%d %H:%M')"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages:pages
+          echo "site deployed"
+      # Alarms last, on purpose: a stale feed should fail the run loudly
+      # without having blocked the archive or the site.
+      - name: Check feed freshness
+        run: |
+          set -e
+          export DB=raw_data/metro.db
+          sqlite3 -noheader "$DB" \
+            "SELECT source || ' ' || MAX(occurred_at) FROM incidents
+             WHERE source IN ('opd', 'sarpy', 'cbpd') GROUP BY source
+             HAVING MAX(occurred_at) < datetime('now', '-7 days')" > stale.txt
+          if [ -s stale.txt ]; then
+            while read -r line; do echo "ERROR: feed is stale: $line"; done < stale.txt
+            exit 1
+          fi
+          echo "all feeds current"
+          age=$(sqlite3 -noheader "$DB" "
+            SELECT CAST(julianday('now') - julianday(MAX(imported_at)) AS INT)
+              FROM alpr_searches" 2>/dev/null || echo "")
+          if [ -z "$age" ]; then echo "no Flock export on file yet"; exit 0; fi
+          echo "newest Flock export imported $age days ago"
+          if [ "$age" -ge 27 ]; then
+            echo "ERROR: Flock search audit is $age days old and the portal only keeps 30."
+            echo "Download it from https://transparency.flocksafety.com/council-bluffs-ia-pd"
+            echo "and commit it to raw_data/flock/ before the window closes."
+            exit 1
+          elif [ "$age" -ge 21 ]; then
+            echo "WARNING: Flock search audit is $age days old; refresh it soon."
+          fi
