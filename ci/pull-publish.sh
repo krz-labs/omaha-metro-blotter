@@ -33,12 +33,17 @@ cat before.txt
 # OPD amends records filed months ago; sweep the whole feed on Sundays.
 if [ "$(date -u +%u)" = "7" ]; then
   echo "full sweep"
-  python ingest.py --full opd sarpy cbpd alpr flock opd_archive
+  python ingest.py --full opd sarpy cbpd flock opd_archive
 else
   # The default set, spelled out: Python 3.14's argparse rejects an empty
   # list against choices, so a bare call errors before it pulls anything.
-  python ingest.py opd sarpy cbpd alpr flock
+  python ingest.py opd sarpy cbpd flock
 fi
+# alpr is the OSM camera list from Overpass, which is not always reachable from
+# GitHub's runners. It must not hold back the incident archive: publish anyway
+# and leave alpr-failed for the workflow's last step to fail the run.
+rm -f alpr-failed
+python ingest.py alpr || { echo "ERROR: alpr (Overpass) pull failed; publishing the rest"; touch alpr-failed; }
 
 counts > after.txt
 cat after.txt

@@ -71,3 +71,9 @@ jobs:
           elif [ "$age" -ge 21 ]; then
             echo "WARNING: Flock search audit is $age days old; refresh it soon."
           fi
+      - name: Check the alpr pull
+        run: |
+          if [ -f alpr-failed ]; then
+            echo "ERROR: the Overpass camera pull failed; the incident archive and site were published without it."
+            exit 1
+          fi
