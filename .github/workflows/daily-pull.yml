@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: archive
@@ -43,6 +44,30 @@ jobs:
           git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -q -m "site $(date -u '+%Y-%m-%d %H:%M')"
           git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages:pages
           echo "site deployed"
+      # Opens an issue assigned to the maintainer once the newest Flock export
+      # is 21 days old, and closes it when a fresh one is committed. The portal
+      # keeps 30 days.
+      - name: Flock export reminder
+        run: |
+          set -e
+          title="Refresh the Council Bluffs Flock export"
+          age=$(sqlite3 -noheader raw_data/metro.db "
+            SELECT CAST(julianday('now') - julianday(MAX(imported_at)) AS INT)
+              FROM alpr_searches" 2>/dev/null || echo "")
+          open=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$age" ] && [ "$age" -ge 21 ]; then
+            if [ -z "$open" ]; then
+              gh issue create --title "$title" --assignee ccleberg --body "The newest Flock search audit is $age days old, and the portal keeps 30.
+
+          1. Download the audit from https://transparency.flocksafety.com/council-bluffs-ia-pd.
+          2. File it: \`python ingest.py --import-flock ~/Downloads/public_search_audit.csv\`
+          3. Commit the new file in \`raw_data/flock/\` through a pull request.
+
+          The daily pull closes this issue once the new export is loaded."
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "A Flock export from the last 21 days is loaded."
+          fi
       # Alarms last, on purpose: a stale feed should fail the run loudly
       # without having blocked the archive or the site.
       - name: Check feed freshness
